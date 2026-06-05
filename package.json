@@ -1,0 +1,46 @@
+{
+  "name": "bare-broadcast-channel",
+  "version": "0.0.0",
+  "description": "Multi-producer, multi-consumer inter-thread broadcast messaging for JavaScript",
+  "exports": {
+    "./package": "./package.json",
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "binding.c",
+    "binding.js",
+    "CMakeLists.txt",
+    "lib",
+    "prebuilds"
+  ],
+  "addon": true,
+  "scripts": {
+    "format": "prettier --write . && lunte --fix",
+    "lint": "prettier --check . && lunte",
+    "test": "brittle-bare --coverage test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/holepunchto/bare-broadcast-channel.git"
+  },
+  "author": "Holepunch",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/holepunchto/bare-broadcast-channel/issues"
+  },
+  "homepage": "https://github.com/holepunchto/bare-broadcast-channel#readme",
+  "dependencies": {
+    "bare-events": "^2.0.0",
+    "bare-stream": "^2.7.0",
+    "bare-structured-clone": "^1.4.0"
+  },
+  "devDependencies": {
+    "brittle": "^3.1.1",
+    "cmake-bare": "^1.1.7",
+    "lunte": "^1.8.0",
+    "prettier": "^3.4.1",
+    "prettier-config-holepunch": "^2.0.0"
+  }
+}
