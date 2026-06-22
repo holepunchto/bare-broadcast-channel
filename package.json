@@ -1,6 +1,6 @@
 {
   "name": "bare-broadcast-channel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Multi-producer, multi-consumer inter-thread broadcast messaging for JavaScript",
   "exports": {
     "./package": "./package.json",
