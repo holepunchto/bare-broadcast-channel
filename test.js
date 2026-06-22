@@ -645,3 +645,107 @@ test('readSync terminates when all peers leave', async (t) => {
   await port.close()
   thread.join()
 })
+
+test('port slots are reused after close', async (t) => {
+  t.plan(1)
+
+  const channel = new BroadcastChannel()
+
+  // Open and close more ports than the channel can hold at once. Without slot
+  // reuse this exhausts the channel and throws partway through.
+  for (let i = 0; i < BroadcastChannel.MAX_PORTS + 8; i++) {
+    const port = channel.connect()
+
+    await port.close()
+  }
+
+  t.pass('reused slots without exhausting the channel')
+})
+
+test('channel still exhausts when ports are held open', async (t) => {
+  t.plan(1)
+
+  const channel = new BroadcastChannel()
+
+  const ports = []
+
+  for (let i = 0; i < BroadcastChannel.MAX_PORTS; i++) {
+    ports.push(channel.connect())
+  }
+
+  t.exception(() => channel.connect(), /maximum number of connected ports/)
+
+  await Promise.all(ports.map((port) => port.close()))
+})
+
+test('reused slots deliver messages on a clean queue', async (t) => {
+  t.plan(2)
+
+  const channel = new BroadcastChannel()
+
+  // Churn through enough connections to force the next pair onto reused slots.
+  for (let i = 0; i < BroadcastChannel.MAX_PORTS; i++) {
+    const port = channel.connect()
+
+    await port.write('discarded')
+    await port.close()
+  }
+
+  const reader = channel.connect()
+  const writer = channel.connect()
+
+  while (writer.peers < 1) await new Promise((r) => setTimeout(r, 10))
+
+  await writer.write('after-reuse')
+
+  t.is(await reader.read(), 'after-reuse')
+  t.is(reader.peers, 1)
+
+  await writer.close()
+  await reader.close()
+})
+
+test('concurrent connect and close churn across threads', async (t) => {
+  t.plan(1)
+
+  const channel = new BroadcastChannel()
+
+  const ROUNDS = 50
+
+  const churn = () =>
+    new Thread(
+      __filename,
+      { data: { handle: channel.handle, rounds: ROUNDS } },
+      async ({ handle, rounds }) => {
+        const BroadcastChannel = require('.')
+
+        const channel = BroadcastChannel.from(handle)
+
+        for (let i = 0; i < rounds; i++) {
+          const port = channel.connect()
+
+          // Exercise the cross-thread producer path against peers that may be
+          // concurrently closing and having their slots reused.
+          await port.write(i)
+          await port.close()
+        }
+      }
+    )
+
+  const a = churn()
+  const b = churn()
+  const c = churn()
+
+  for (let i = 0; i < ROUNDS; i++) {
+    const port = channel.connect()
+
+    await port.write(i)
+    await port.close()
+  }
+
+  a.join()
+  b.join()
+  c.join()
+
+  t.pass('churned slots across threads without exhaustion or crash')
+})
