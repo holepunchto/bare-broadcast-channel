@@ -73,7 +73,7 @@ struct bare_broadcast_channel_port_s {
 };
 
 struct bare_broadcast_channel_s {
-  atomic_uint next;
+  atomic_uint claimed_ports;
   atomic_uint active_ports;
 
   bare_broadcast_channel_port_t ports[BARE_BROADCAST_CHANNEL_MAX_PORTS];
@@ -333,6 +333,10 @@ bare_broadcast_channel__on_close(uv_handle_t *handle) {
 
   if (--port->state.closing != 0) return;
 
+  bare_broadcast_channel_t *channel = port->channel;
+
+  uint8_t id = port->id;
+
   js_deferred_teardown_t *teardown = port->teardown;
 
   js_env_t *env = port->env;
@@ -371,6 +375,12 @@ bare_broadcast_channel__on_close(uv_handle_t *handle) {
 
   err = js_finish_deferred_teardown_callback(teardown);
   assert(err == 0);
+
+  // Release the slot so a later connection can reuse it. This must happen only
+  // once the port has fully torn down: its active bit is long cleared, its
+  // queue drained, and the libuv handles backing it closed, so no other thread
+  // can still observe or signal this incarnation.
+  atomic_fetch_and_explicit(&channel->claimed_ports, ~(1u << id), memory_order_release);
 }
 
 static void
@@ -400,7 +410,7 @@ bare_broadcast_channel_init(js_env_t *env, js_callback_info_t *info) {
   err = js_create_sharedarraybuffer(env, sizeof(bare_broadcast_channel_t), (void **) &channel, &handle);
   assert(err == 0);
 
-  atomic_init(&channel->next, 0);
+  atomic_init(&channel->claimed_ports, 0);
   atomic_init(&channel->active_ports, 0);
 
   for (uint8_t id = 0; id < BARE_BROADCAST_CHANNEL_MAX_PORTS; id++) {
@@ -415,6 +425,26 @@ bare_broadcast_channel_init(js_env_t *env, js_callback_info_t *info) {
 
     atomic_init(&port->cursors.read, 0);
     atomic_init(&port->cursors.write, 0);
+
+    // The locks and conditions live for the lifetime of the channel rather than
+    // a single port incarnation. Peers lock a port's producer mutex whenever
+    // they write to or signal it, including while it is closing or being reused
+    // by a later connection, so the backing memory must remain valid and must
+    // never be reinitialized underneath them.
+#define V(lock) \
+  err = uv_mutex_init(&port->locks.lock); \
+  assert(err == 0);
+    V(drain)
+    V(flush)
+    V(producer)
+#undef V
+
+#define V(condition) \
+  err = uv_cond_init(&port->conditions.condition); \
+  assert(err == 0);
+    V(drain)
+    V(flush)
+#undef V
   }
 
   return handle;
@@ -436,13 +466,30 @@ bare_broadcast_channel_port_init(js_env_t *env, js_callback_info_t *info) {
   err = js_get_sharedarraybuffer_info(env, argv[0], (void **) &channel, NULL);
   assert(err == 0);
 
-  unsigned int id = atomic_fetch_add_explicit(&channel->next, 1, memory_order_acq_rel);
+  // Claim the lowest free port slot. Slots are released once a port has fully
+  // torn down (see bare_broadcast_channel__on_close), so they may be reused by
+  // later connections rather than being exhausted over the channel's lifetime.
+  const uint32_t mask = (uint32_t) ((1ull << BARE_BROADCAST_CHANNEL_MAX_PORTS) - 1);
 
-  if (id >= BARE_BROADCAST_CHANNEL_MAX_PORTS) {
-    err = js_throw_error(env, NULL, "Channel has reached the maximum number of connected ports");
-    assert(err == 0);
+  unsigned int id;
 
-    return NULL;
+  while (true) {
+    uint32_t claimed = atomic_load_explicit(&channel->claimed_ports, memory_order_acquire);
+
+    uint32_t available = ~claimed & mask;
+
+    if (available == 0) {
+      err = js_throw_error(env, NULL, "Channel has reached the maximum number of connected ports");
+      assert(err == 0);
+
+      return NULL;
+    }
+
+    id = __builtin_ctz(available);
+
+    if (atomic_compare_exchange_weak_explicit(&channel->claimed_ports, &claimed, claimed | (1u << id), memory_order_acq_rel, memory_order_acquire)) {
+      break;
+    }
   }
 
   uv_loop_t *loop;
@@ -452,6 +499,18 @@ bare_broadcast_channel_port_init(js_env_t *env, js_callback_info_t *info) {
   bare_broadcast_channel_port_t *port = &channel->ports[id];
 
   port->env = env;
+
+  // Reset the per-incarnation state in case this slot previously backed a now
+  // closed port.
+  port->state.ending = false;
+  port->state.ended = false;
+  port->state.closing = 0;
+  port->state.exiting = false;
+
+  atomic_store_explicit(&port->state.active, false, memory_order_relaxed);
+
+  atomic_store_explicit(&port->cursors.read, 0, memory_order_relaxed);
+  atomic_store_explicit(&port->cursors.write, 0, memory_order_relaxed);
 
   err = js_create_reference(env, argv[1], 1, &port->ctx);
   assert(err == 0);
@@ -470,21 +529,6 @@ bare_broadcast_channel_port_init(js_env_t *env, js_callback_info_t *info) {
 
   err = js_add_deferred_teardown_callback(env, bare_broadcast_channel__on_teardown, (void *) port, &port->teardown);
   assert(err == 0);
-
-#define V(lock) \
-  err = uv_mutex_init(&port->locks.lock); \
-  assert(err == 0);
-  V(drain)
-  V(flush)
-  V(producer)
-#undef V
-
-#define V(condition) \
-  err = uv_cond_init(&port->conditions.condition); \
-  assert(err == 0);
-  V(drain)
-  V(flush)
-#undef V
 
 #define V(signal) \
   err = uv_async_init(loop, &port->signals.signal, bare_broadcast_channel__on_##signal); \
