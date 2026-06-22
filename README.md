@@ -51,7 +51,7 @@ options = {
 }
 ```
 
-If `handle` is provided, the channel is restored from that existing `SharedArrayBuffer` rather than allocating a fresh one. `interfaces` is a list of serializable or transferable constructors used by <https://github.com/holepunchto/bare-structured-clone> when encoding values.
+If `handle` is provided, the channel is restored from that existing `SharedArrayBuffer` rather than allocating a fresh one. `interfaces` is a list of serializable constructors used by <https://github.com/holepunchto/bare-structured-clone> when encoding values.
 
 #### `BroadcastChannel.MAX_PORTS`
 
@@ -67,7 +67,7 @@ The `SharedArrayBuffer` backing the channel. Pass this to other threads to share
 
 #### `channel.interfaces`
 
-The serializable and transferable interfaces registered on the channel.
+The serializable interfaces registered on the channel.
 
 #### `const port = channel.connect()`
 
@@ -81,21 +81,13 @@ A `Port` is an `EventEmitter` and is both iterable (`for ... of`) and async iter
 
 The current number of connected peer ports, excluding `port` itself.
 
-#### `const flushed = await port.write(value[, options])`
+#### `const flushed = await port.write(value)`
 
 Broadcast `value` to every currently connected peer. Resolves to `true` once `value` has been pushed to every peer's queue, or `false` if `port` is closed. If any peer's queue is full, the write waits for it to drain before resolving.
 
-Options include:
+`value` is cloned for each peer using <https://github.com/holepunchto/bare-structured-clone>. Transferring ownership of a value is not supported; a broadcast delivers to many peers, so there is no single recipient to take ownership, and the same serialization is decoded independently by each peer.
 
-```js
-options = {
-  transfer: []
-}
-```
-
-`transfer` is the list of transferable objects within `value`; see <https://github.com/holepunchto/bare-structured-clone>.
-
-#### `const flushed = port.writeSync(value[, options])`
+#### `const flushed = port.writeSync(value)`
 
 Synchronous version of `port.write()`.
 
