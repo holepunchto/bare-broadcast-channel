@@ -85,7 +85,7 @@ class Port extends EventEmitter {
     }
   }
 
-  async write(value, opts = {}) {
+  async write(value) {
     if (value === null) return false
 
     while (this._drain !== null) await this._drain.promise
@@ -93,7 +93,7 @@ class Port extends EventEmitter {
     if (this._close !== null) return false
     if (this._state & ENDED) return false
 
-    const data = encode(this._channel, value, opts)
+    const data = encode(this._channel, value)
 
     while (true) {
       const flushed = binding.portWrite(this._channel.handle, this._id, data)
@@ -109,12 +109,12 @@ class Port extends EventEmitter {
     }
   }
 
-  writeSync(value, opts = {}) {
+  writeSync(value) {
     if (value === null) return false
 
     if (this._state & ENDED) return false
 
-    const data = encode(this._channel, value, opts)
+    const data = encode(this._channel, value)
 
     while (true) {
       const flushed = binding.portWrite(this._channel.handle, this._id, data)
@@ -324,8 +324,8 @@ class PortDuplexStream extends Duplex {
   }
 }
 
-function encode(channel, value, opts) {
-  const serialized = structuredClone.serializeWithTransfer(value, opts.transfer, channel.interfaces)
+function encode(channel, value) {
+  const serialized = structuredClone.serialize(value, false, channel.interfaces)
 
   const state = { start: 0, end: 0, buffer: null }
 
@@ -347,5 +347,5 @@ function decode(channel, data) {
     buffer: Buffer.from(data)
   }
 
-  return structuredClone.deserializeWithTransfer(structuredClone.decode(state), channel.interfaces)
+  return structuredClone.deserialize(structuredClone.decode(state), channel.interfaces)
 }
