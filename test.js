@@ -75,16 +75,23 @@ test('multi producer single consumer', async (t) => {
   const PER_PRODUCER = 100
   const TOTAL = NUM_PRODUCERS * PER_PRODUCER
 
+  const barrier = new Barrier(NUM_PRODUCERS)
+
   const producers = []
   for (let i = 0; i < NUM_PRODUCERS; i++) {
     producers.push(
       new Thread(
         __filename,
-        { data: { handle: channel.handle, id: i, n: PER_PRODUCER } },
-        async ({ handle, id, n }) => {
+        { data: { handle: channel.handle, barrierHandle: barrier.handle, id: i, n: PER_PRODUCER } },
+        async ({ handle, barrierHandle, id, n }) => {
+          const { Barrier } = require('bare-atomics')
           const BroadcastChannel = require('.')
+
           const channel = BroadcastChannel.from(handle)
+          const barrier = Barrier.from(barrierHandle)
           const port = channel.connect()
+
+          barrier.wait()
 
           for (let i = 0; i < n; i++) await port.write({ id, i })
 
@@ -113,6 +120,8 @@ test('multi producer single consumer', async (t) => {
   t.ok(ok, 'received PER_PRODUCER messages from every producer')
 
   for (const p of producers) p.join()
+
+  barrier.destroy()
 })
 
 test('multi producer multi consumer', async (t) => {
@@ -644,6 +653,37 @@ test('readSync terminates when all peers leave', async (t) => {
 
   const received = []
   for (const msg of port) {
+    received.push(msg)
+  }
+
+  t.alike(received, ['hello', 'world'])
+
+  await port.close()
+  thread.join()
+})
+
+test('read terminates when all peers leave', async (t) => {
+  t.plan(1)
+
+  const channel = new BroadcastChannel()
+
+  const thread = new Thread(__filename, { data: channel.handle }, async (handle) => {
+    const BroadcastChannel = require('.')
+
+    const channel = BroadcastChannel.from(handle)
+    const p = channel.connect()
+
+    while (p.peers < 1) await new Promise((r) => setTimeout(r, 10))
+
+    await p.write('hello')
+    await p.write('world')
+    await p.close()
+  })
+
+  const port = channel.connect()
+
+  const received = []
+  for await (const msg of port) {
     received.push(msg)
   }
 
