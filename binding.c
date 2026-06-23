@@ -32,8 +32,9 @@ typedef struct bare_broadcast_channel_segment_s bare_broadcast_channel_segment_t
 typedef struct bare_broadcast_channel_port_s bare_broadcast_channel_port_t;
 typedef struct bare_broadcast_channel_message_s bare_broadcast_channel_message_t;
 typedef struct bare_broadcast_channel_payload_s bare_broadcast_channel_payload_t;
+typedef struct bare_broadcast_channel_peers_s bare_broadcast_channel_peers_t
 
-struct bare_broadcast_channel_payload_s {
+  struct bare_broadcast_channel_payload_s {
   atomic_int refcount;
   js_arraybuffer_backing_store_t *backing_store;
 };
@@ -121,6 +122,16 @@ struct bare_broadcast_channel_s {
   _Atomic(bare_broadcast_channel_segment_t *) segments[BARE_BROADCAST_CHANNEL_MAX_SEGMENTS];
 };
 
+struct bare_broadcast_channel_peers_s {
+  bare_broadcast_channel_t *channel;
+  bare_broadcast_channel_segment_t *segment;
+  uint32_t segments;
+  uint32_t self_segment;
+  uint64_t self_bit;
+  uint32_t index;
+  uint64_t bits;
+};
+
 static inline uint32_t
 bare_broadcast_channel__round_capacity(uint32_t capacity) {
   if (capacity < BARE_BROADCAST_CHANNEL_MIN_CAPACITY) {
@@ -148,6 +159,65 @@ bare_broadcast_channel__port(bare_broadcast_channel_t *channel, uint32_t id) {
   bare_broadcast_channel_segment_t *segment = bare_broadcast_channel__segment(channel, id / BARE_BROADCAST_CHANNEL_SEGMENT_SIZE);
 
   return segment->slots[id & BARE_BROADCAST_CHANNEL_SEGMENT_MASK];
+}
+
+static inline bare_broadcast_channel_peers_t
+bare_broadcast_channel__peers(bare_broadcast_channel_t *channel, uint32_t id) {
+  return (bare_broadcast_channel_peers_t){
+    .channel = channel,
+    .segment = NULL,
+    .segments = atomic_load_explicit(&channel->segment_count, memory_order_acquire),
+    .self_segment = id / BARE_BROADCAST_CHANNEL_SEGMENT_SIZE,
+    .self_bit = 1ull << (id & BARE_BROADCAST_CHANNEL_SEGMENT_MASK),
+    .index = 0,
+    .bits = 0,
+  };
+}
+
+static inline bare_broadcast_channel_port_t *
+bare_broadcast_channel__peers_next(bare_broadcast_channel_peers_t *peers) {
+  while (peers->bits == 0) {
+    if (peers->index >= peers->segments) return NULL;
+
+    peers->segment = bare_broadcast_channel__segment(peers->channel, peers->index);
+
+    uint64_t active = atomic_load_explicit(&peers->segment->active, memory_order_acquire);
+
+    if (peers->index == peers->self_segment) active &= ~peers->self_bit;
+
+    peers->bits = active;
+    peers->index++;
+  }
+
+  int bit = __builtin_ctzll(peers->bits);
+
+  peers->bits &= peers->bits - 1;
+
+  return peers->segment->slots[bit];
+}
+
+static inline void
+bare_broadcast_channel__signal(uv_mutex_t *lock, uv_cond_t *cond, uv_async_t *async) {
+  int err;
+
+  uv_mutex_lock(lock);
+  uv_cond_signal(cond);
+  uv_mutex_unlock(lock);
+
+  err = uv_async_send(async);
+  assert(err == 0);
+}
+
+static inline void
+bare_broadcast_channel__wake_peer(bare_broadcast_channel_port_t *peer, bool flush, bool drain) {
+  uv_mutex_lock(&peer->locks.producer);
+
+  if (atomic_load_explicit(&peer->state.active, memory_order_acquire)) {
+    if (flush) bare_broadcast_channel__signal(&peer->locks.flush, &peer->conditions.flush, &peer->signals.flush);
+    if (drain) bare_broadcast_channel__signal(&peer->locks.drain, &peer->conditions.drain, &peer->signals.drain);
+  }
+
+  uv_mutex_unlock(&peer->locks.producer);
 }
 
 // Counts the active peers of a port, excluding the port itself, by summing the
@@ -187,54 +257,19 @@ bare_broadcast_channel__peek_read(bare_broadcast_channel_port_t *port) {
 
 static inline void
 bare_broadcast_channel__push_read(bare_broadcast_channel_port_t *port) {
-  int err;
-
   int read = atomic_load_explicit(&port->cursors.read, memory_order_relaxed);
 
   int next = (read + 1) & port->capacity_mask;
 
   atomic_store_explicit(&port->cursors.read, next, memory_order_release);
 
-  bare_broadcast_channel_t *channel = port->channel;
-
-  uint32_t self_segment = port->id / BARE_BROADCAST_CHANNEL_SEGMENT_SIZE;
-
-  uint32_t segments = atomic_load_explicit(&channel->segment_count, memory_order_acquire);
-
   // Reading freed a slot in this port's ring, so wake any peer that may be
   // blocked writing to us. We do not know which peers are producers, so we
   // signal every active peer's drain condition.
-  for (uint32_t s = 0; s < segments; s++) {
-    bare_broadcast_channel_segment_t *segment = bare_broadcast_channel__segment(channel, s);
+  bare_broadcast_channel_peers_t peers = bare_broadcast_channel__peers(port->channel, port->id);
 
-    uint64_t active = atomic_load_explicit(&segment->active, memory_order_acquire);
-
-    if (s == self_segment) active &= ~port->bit;
-
-    while (active) {
-      int b = __builtin_ctzll(active);
-      active &= active - 1;
-
-      bare_broadcast_channel_port_t *peer = segment->slots[b];
-
-      uv_mutex_lock(&peer->locks.producer);
-
-      if (!atomic_load_explicit(&peer->state.active, memory_order_acquire)) {
-        uv_mutex_unlock(&peer->locks.producer);
-        continue;
-      }
-
-      uv_mutex_lock(&peer->locks.drain);
-
-      uv_cond_signal(&peer->conditions.drain);
-
-      uv_mutex_unlock(&peer->locks.drain);
-
-      err = uv_async_send(&peer->signals.drain);
-      assert(err == 0);
-
-      uv_mutex_unlock(&peer->locks.producer);
-    }
+  for (bare_broadcast_channel_port_t *peer; (peer = bare_broadcast_channel__peers_next(&peers));) {
+    bare_broadcast_channel__wake_peer(peer, false, true);
   }
 }
 
@@ -253,8 +288,6 @@ bare_broadcast_channel__peek_write(bare_broadcast_channel_port_t *port) {
 
 static inline void
 bare_broadcast_channel__push_write(bare_broadcast_channel_port_t *port) {
-  int err;
-
   int write = atomic_load_explicit(&port->cursors.write, memory_order_relaxed);
 
   int next = (write + 1) & port->capacity_mask;
@@ -262,14 +295,7 @@ bare_broadcast_channel__push_write(bare_broadcast_channel_port_t *port) {
   atomic_store_explicit(&port->cursors.write, next, memory_order_release);
 
   if (atomic_load_explicit(&port->state.active, memory_order_acquire)) {
-    uv_mutex_lock(&port->locks.flush);
-
-    uv_cond_signal(&port->conditions.flush);
-
-    uv_mutex_unlock(&port->locks.flush);
-
-    err = uv_async_send(&port->signals.flush);
-    assert(err == 0);
+    bare_broadcast_channel__signal(&port->locks.flush, &port->conditions.flush, &port->signals.flush);
   }
 }
 
@@ -289,50 +315,10 @@ bare_broadcast_channel__release_payload(js_env_t *env, bare_broadcast_channel_pa
 // re-evaluate the peer set. Used when a port joins or leaves.
 static inline void
 bare_broadcast_channel__wake_peers(bare_broadcast_channel_port_t *port) {
-  int err;
+  bare_broadcast_channel_peers_t peers = bare_broadcast_channel__peers(port->channel, port->id);
 
-  bare_broadcast_channel_t *channel = port->channel;
-
-  uint32_t self_segment = port->id / BARE_BROADCAST_CHANNEL_SEGMENT_SIZE;
-
-  uint32_t segments = atomic_load_explicit(&channel->segment_count, memory_order_acquire);
-
-  for (uint32_t s = 0; s < segments; s++) {
-    bare_broadcast_channel_segment_t *segment = bare_broadcast_channel__segment(channel, s);
-
-    uint64_t active = atomic_load_explicit(&segment->active, memory_order_acquire);
-
-    if (s == self_segment) active &= ~port->bit;
-
-    while (active) {
-      int b = __builtin_ctzll(active);
-      active &= active - 1;
-
-      bare_broadcast_channel_port_t *peer = segment->slots[b];
-
-      uv_mutex_lock(&peer->locks.producer);
-
-      if (!atomic_load_explicit(&peer->state.active, memory_order_acquire)) {
-        uv_mutex_unlock(&peer->locks.producer);
-        continue;
-      }
-
-      uv_mutex_lock(&peer->locks.flush);
-      uv_cond_signal(&peer->conditions.flush);
-      uv_mutex_unlock(&peer->locks.flush);
-
-      err = uv_async_send(&peer->signals.flush);
-      assert(err == 0);
-
-      uv_mutex_lock(&peer->locks.drain);
-      uv_cond_signal(&peer->conditions.drain);
-      uv_mutex_unlock(&peer->locks.drain);
-
-      err = uv_async_send(&peer->signals.drain);
-      assert(err == 0);
-
-      uv_mutex_unlock(&peer->locks.producer);
-    }
+  for (bare_broadcast_channel_port_t *peer; (peer = bare_broadcast_channel__peers_next(&peers));) {
+    bare_broadcast_channel__wake_peer(peer, true, true);
   }
 }
 
@@ -789,33 +775,20 @@ bare_broadcast_channel_port_wait_drain(js_env_t *env, js_callback_info_t *info) 
 
   bare_broadcast_channel_port_t *port = bare_broadcast_channel__port(channel, id);
 
-  uint32_t self_segment = id / BARE_BROADCAST_CHANNEL_SEGMENT_SIZE;
-
   uv_mutex_lock(&port->locks.drain);
 
   while (true) {
-    uint32_t segments = atomic_load_explicit(&channel->segment_count, memory_order_acquire);
-
     bool any_peers = false;
     bool any_full = false;
 
-    for (uint32_t s = 0; s < segments && !any_full; s++) {
-      bare_broadcast_channel_segment_t *segment = bare_broadcast_channel__segment(channel, s);
+    bare_broadcast_channel_peers_t peers = bare_broadcast_channel__peers(channel, id);
 
-      uint64_t active = atomic_load_explicit(&segment->active, memory_order_acquire);
+    for (bare_broadcast_channel_port_t *peer; (peer = bare_broadcast_channel__peers_next(&peers));) {
+      any_peers = true;
 
-      if (s == self_segment) active &= ~port->bit;
-
-      if (active) any_peers = true;
-
-      while (active) {
-        int b = __builtin_ctzll(active);
-        active &= active - 1;
-
-        if (bare_broadcast_channel__peek_write(segment->slots[b]) == NULL) {
-          any_full = true;
-          break;
-        }
+      if (bare_broadcast_channel__peek_write(peer) == NULL) {
+        any_full = true;
+        break;
       }
     }
 
@@ -906,12 +879,7 @@ bare_broadcast_channel_port_read(js_env_t *env, js_callback_info_t *info) {
     err = js_create_sharedarraybuffer_with_backing_store(env, payload->backing_store, NULL, NULL, &result);
     assert(err == 0);
 
-    if (atomic_fetch_sub_explicit(&payload->refcount, 1, memory_order_acq_rel) == 1) {
-      err = js_release_arraybuffer_backing_store(env, payload->backing_store);
-      assert(err == 0);
-
-      free(payload);
-    }
+    bare_broadcast_channel__release_payload(env, payload);
 
     bare_broadcast_channel__push_read(port);
   } else {
