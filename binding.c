@@ -15,6 +15,7 @@
 // never move or get freed for the lifetime of the channel. This keeps the peer
 // list resizable without the reclamation hazards of copying a live directory.
 #define BARE_BROADCAST_CHANNEL_SEGMENT_SIZE 64
+#define BARE_BROADCAST_CHANNEL_SEGMENT_MASK (BARE_BROADCAST_CHANNEL_SEGMENT_SIZE - 1)
 #define BARE_BROADCAST_CHANNEL_MAX_SEGMENTS 1024
 
 #define BARE_BROADCAST_CHANNEL_MAX_PORTS \
@@ -146,7 +147,7 @@ static inline bare_broadcast_channel_port_t *
 bare_broadcast_channel__port(bare_broadcast_channel_t *channel, uint32_t id) {
   bare_broadcast_channel_segment_t *segment = bare_broadcast_channel__segment(channel, id / BARE_BROADCAST_CHANNEL_SEGMENT_SIZE);
 
-  return segment->slots[id % BARE_BROADCAST_CHANNEL_SEGMENT_SIZE];
+  return segment->slots[id & BARE_BROADCAST_CHANNEL_SEGMENT_MASK];
 }
 
 // Counts the active peers of a port, excluding the port itself, by summing the
@@ -154,7 +155,7 @@ bare_broadcast_channel__port(bare_broadcast_channel_t *channel, uint32_t id) {
 static inline uint32_t
 bare_broadcast_channel__count_peers(bare_broadcast_channel_t *channel, uint32_t id) {
   uint32_t self_segment = id / BARE_BROADCAST_CHANNEL_SEGMENT_SIZE;
-  uint64_t self_bit = 1ull << (id % BARE_BROADCAST_CHANNEL_SEGMENT_SIZE);
+  uint64_t self_bit = 1ull << (id & BARE_BROADCAST_CHANNEL_SEGMENT_MASK);
 
   uint32_t count = 0;
 
@@ -942,7 +943,7 @@ bare_broadcast_channel_port_write(js_env_t *env, js_callback_info_t *info) {
   assert(err == 0);
 
   uint32_t self_segment = id / BARE_BROADCAST_CHANNEL_SEGMENT_SIZE;
-  uint64_t self_bit = 1ull << (id % BARE_BROADCAST_CHANNEL_SEGMENT_SIZE);
+  uint64_t self_bit = 1ull << (id & BARE_BROADCAST_CHANNEL_SEGMENT_MASK);
 
   js_value_t *result;
 
