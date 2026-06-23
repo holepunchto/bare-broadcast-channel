@@ -8,7 +8,11 @@ const ENDED = 0x1
 
 module.exports = exports = class BroadcastChannel {
   constructor(opts = {}) {
-    const { handle = binding.channelInit(), interfaces = [] } = opts
+    const {
+      portCapacity = 1024,
+      handle = binding.channelInit(portCapacity),
+      interfaces = []
+    } = opts
 
     this.handle = handle
     this.interfaces = interfaces

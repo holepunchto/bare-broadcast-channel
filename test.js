@@ -651,29 +651,35 @@ test('port slots are reused after close', async (t) => {
 
   const channel = new BroadcastChannel()
 
-  // Open and close more ports than the channel can hold at once. Without slot
-  // reuse this exhausts the channel and throws partway through.
-  for (let i = 0; i < BroadcastChannel.MAX_PORTS + 8; i++) {
+  // Open and close many more ports in sequence than are ever live at once. Slot
+  // reuse means this churns through a single slot rather than growing the
+  // directory unbounded.
+  for (let i = 0; i < 200; i++) {
     const port = channel.connect()
 
     await port.close()
   }
 
-  t.pass('reused slots without exhausting the channel')
+  t.pass('reused slots without growing the directory')
 })
 
-test('channel still exhausts when ports are held open', async (t) => {
-  t.plan(1)
+test('directory grows to hold many simultaneous ports', async (t) => {
+  t.plan(2)
 
   const channel = new BroadcastChannel()
 
+  // Open more ports at once than a single segment can hold, forcing the
+  // directory to grow across several segments.
+  const COUNT = 130
+
   const ports = []
 
-  for (let i = 0; i < BroadcastChannel.MAX_PORTS; i++) {
+  for (let i = 0; i < COUNT; i++) {
     ports.push(channel.connect())
   }
 
-  t.exception(() => channel.connect(), /maximum number of connected ports/)
+  t.is(ports.length, COUNT, 'opened ports across multiple segments')
+  t.is(ports[ports.length - 1].peers, COUNT - 1, 'last port sees every other peer')
 
   await Promise.all(ports.map((port) => port.close()))
 })
@@ -684,7 +690,7 @@ test('reused slots deliver messages on a clean queue', async (t) => {
   const channel = new BroadcastChannel()
 
   // Churn through enough connections to force the next pair onto reused slots.
-  for (let i = 0; i < BroadcastChannel.MAX_PORTS; i++) {
+  for (let i = 0; i < 100; i++) {
     const port = channel.connect()
 
     await port.write('discarded')
@@ -703,6 +709,51 @@ test('reused slots deliver messages on a clean queue', async (t) => {
 
   await writer.close()
   await reader.close()
+})
+
+test('custom port capacity delivers all messages', async (t) => {
+  t.plan(1)
+
+  // A capacity of 3 rounds up to 4, leaving a tiny ring that wraps many times
+  // and exercises backpressure over the course of the transfer.
+  const channel = new BroadcastChannel({ portCapacity: 3 })
+
+  const N = 1e3
+
+  const thread = new Thread(
+    __filename,
+    { data: { handle: channel.handle, n: N } },
+    async ({ handle, n }) => {
+      const BroadcastChannel = require('.')
+
+      const channel = BroadcastChannel.from(handle)
+      const port = channel.connect()
+
+      const read = []
+      for await (const v of port) {
+        read.push(v)
+        if (read.length === n) break
+      }
+
+      let ok = read.length === n
+      for (let i = 0; i < n; i++) if (read[i] !== i) ok = false
+      if (!ok) throw new Error('mismatch')
+
+      await port.close()
+    }
+  )
+
+  const port = channel.connect()
+
+  while (port.peers < 1) await new Promise((r) => setTimeout(r, 10))
+
+  for (let i = 0; i < N; i++) await port.write(i)
+
+  await port.close()
+
+  thread.join()
+
+  t.pass('all messages delivered over a small ring')
 })
 
 test('concurrent connect and close churn across threads', async (t) => {

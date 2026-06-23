@@ -12,6 +12,7 @@ import {
 interface BroadcastChannelOptions {
   handle?: SharedArrayBuffer
   interfaces?: SerializableConstructor[]
+  portCapacity?: number
 }
 
 interface BroadcastChannel<T = unknown> {
