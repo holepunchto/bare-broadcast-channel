@@ -69,6 +69,16 @@ class Port extends EventEmitter {
 
       if (this._state & ENDED) return null
 
+      // Once every peer has left, drain any remaining messages from the ring and
+      // then end the read rather than waiting forever.
+      if (this._hadPeers && this._lastPeers === 0) {
+        this._onflush()
+
+        if (this._queue.length > 0) return this._queue.shift()
+
+        return null
+      }
+
       this._flush = Promise.withResolvers()
 
       await this._flush.promise
@@ -81,7 +91,15 @@ class Port extends EventEmitter {
 
       if (this._state & ENDED) return null
 
-      if (this._hadPeers && this._lastPeers === 0) return null
+      // Once every peer has left, drain any remaining messages from the ring and
+      // then end the read rather than waiting forever.
+      if (this._hadPeers && this._lastPeers === 0) {
+        this._onflush()
+
+        if (this._queue.length > 0) return this._queue.shift()
+
+        return null
+      }
 
       binding.portWaitFlush(this._channel.handle, this._id, this._hadPeers)
 
