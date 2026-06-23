@@ -1,5 +1,6 @@
 const test = require('brittle')
 const { symbols } = require('bare-structured-clone')
+const { Barrier } = require('bare-atomics')
 const BroadcastChannel = require('.')
 const { Thread } = Bare
 
@@ -85,15 +86,10 @@ test('multi producer single consumer', async (t) => {
           const channel = BroadcastChannel.from(handle)
           const port = channel.connect()
 
-          // Drain anything other producers send at us so their writes never stall
-          const drainSelf = (async () => {
-            for await (const _ of port);
-          })()
-
           for (let i = 0; i < n; i++) await port.write({ id, i })
 
           await port.close()
-          await drainSelf
+          for await (const _ of port);
         }
       )
     )
@@ -127,15 +123,21 @@ test('multi producer multi consumer', async (t) => {
   const NUM = 50
   const EXPECTED = NUM * 2
 
+  const barrier = new Barrier(4)
+
   const consumer = () =>
     new Thread(
       __filename,
-      { data: { handle: channel.handle, expected: EXPECTED } },
-      async ({ handle, expected }) => {
+      { data: { handle: channel.handle, barrierHandle: barrier.handle, expected: EXPECTED } },
+      async ({ handle, barrierHandle, expected }) => {
+        const { Barrier } = require('bare-atomics')
         const BroadcastChannel = require('.')
 
         const channel = BroadcastChannel.from(handle)
+        const barrier = Barrier.from(barrierHandle)
         const port = channel.connect()
+
+        barrier.wait()
 
         let count = 0
         for await (const _ of port) {
@@ -153,22 +155,25 @@ test('multi producer multi consumer', async (t) => {
   const c2 = consumer()
 
   const producer = () =>
-    new Thread(__filename, { data: { handle: channel.handle, n: NUM } }, async ({ handle, n }) => {
-      const BroadcastChannel = require('.')
+    new Thread(
+      __filename,
+      { data: { handle: channel.handle, barrierHandle: barrier.handle, n: NUM } },
+      async ({ handle, barrierHandle, n }) => {
+        const { Barrier } = require('bare-atomics')
+        const BroadcastChannel = require('.')
 
-      const channel = BroadcastChannel.from(handle)
-      const port = channel.connect()
+        const channel = BroadcastChannel.from(handle)
+        const barrier = Barrier.from(barrierHandle)
+        const port = channel.connect()
 
-      // Drain anything the other producer sends at us so its writes never stall
-      const drainSelf = (async () => {
+        barrier.wait()
+
+        for (let i = 0; i < n; i++) await port.write(i)
+
+        await port.close()
         for await (const _ of port);
-      })()
-
-      for (let i = 0; i < n; i++) await port.write(i)
-
-      await port.close()
-      await drainSelf
-    })
+      }
+    )
 
   const p1 = producer()
   const p2 = producer()
@@ -177,6 +182,8 @@ test('multi producer multi consumer', async (t) => {
   p2.join()
   c1.join()
   c2.join()
+
+  barrier.destroy()
 
   t.pass('consumer 1 received all')
   t.pass('consumer 2 received all')
