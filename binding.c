@@ -32,9 +32,9 @@ typedef struct bare_broadcast_channel_segment_s bare_broadcast_channel_segment_t
 typedef struct bare_broadcast_channel_port_s bare_broadcast_channel_port_t;
 typedef struct bare_broadcast_channel_message_s bare_broadcast_channel_message_t;
 typedef struct bare_broadcast_channel_payload_s bare_broadcast_channel_payload_t;
-typedef struct bare_broadcast_channel_peers_s bare_broadcast_channel_peers_t
+typedef struct bare_broadcast_channel_peers_s bare_broadcast_channel_peers_t;
 
-  struct bare_broadcast_channel_payload_s {
+struct bare_broadcast_channel_payload_s {
   atomic_int refcount;
   js_arraybuffer_backing_store_t *backing_store;
 };
