@@ -93,11 +93,11 @@ Synchronous version of `port.write()`.
 
 #### `const value = await port.read()`
 
-Read the next message broadcast to `port`. Resolves to `null` only once `port` is closed via `port.close()`. Peers leaving and rejoining the channel does not terminate the read; see `port.readSync()` for the sync-iterator behavior.
+Read the next message broadcast to `port`. Resolves to `null` once `port` is closed via `port.close()`, or once every peer has left after at least one has been observed - so a read loop terminates naturally when the other side disconnects rather than waiting forever. Any messages still queued are delivered before `null`.
 
 #### `const value = port.readSync()`
 
-Synchronous version of `port.read()`. Returns `null` once `port` is closed, or once all peers leave after at least one has been observed — letting a two-peer sync iterator terminate naturally.
+Synchronous version of `port.read()`, with the same end-of-stream semantics: returns `null` once `port` is closed, or once every peer has left after at least one has been observed.
 
 #### `await port.close()`
 
