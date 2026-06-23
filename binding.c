@@ -12,8 +12,10 @@
 // table of segment pointers; each segment owns one 64-bit claim/active word
 // pair and up to 64 lazily allocated ports. Growth only ever appends a new
 // segment, so existing segments, ports, and their synchronisation primitives
-// never move or get freed for the lifetime of the channel. This keeps the peer
-// list resizable without the reclamation hazards of copying a live directory.
+// never move for the lifetime of the channel. This keeps the peer list
+// resizable without the reclamation hazards of copying a live directory. The
+// segments and ports are reclaimed in one pass when the channel handle's
+// finalizer runs, once the last holder of the handle has been collected.
 #define BARE_BROADCAST_CHANNEL_SEGMENT_SIZE 64
 #define BARE_BROADCAST_CHANNEL_SEGMENT_MASK (BARE_BROADCAST_CHANNEL_SEGMENT_SIZE - 1)
 #define BARE_BROADCAST_CHANNEL_MAX_SEGMENTS 1024
@@ -508,6 +510,38 @@ bare_broadcast_channel__on_teardown(js_deferred_teardown_t *handle, void *data) 
   assert(err == 0);
 }
 
+static void
+bare_broadcast_channel__finalize(js_env_t *env, void *data, void *finalize_hint) {
+  bare_broadcast_channel_t *channel = data;
+
+  uint32_t segments = atomic_load_explicit(&channel->segment_count, memory_order_acquire);
+
+  for (uint32_t s = 0; s < segments; s++) {
+    bare_broadcast_channel_segment_t *segment = bare_broadcast_channel__segment(channel, s);
+
+    for (uint32_t i = 0; i < BARE_BROADCAST_CHANNEL_SEGMENT_SIZE; i++) {
+      bare_broadcast_channel_port_t *port = segment->slots[i];
+
+      if (port == NULL) continue;
+
+      uv_mutex_destroy(&port->locks.drain);
+      uv_mutex_destroy(&port->locks.flush);
+      uv_mutex_destroy(&port->locks.producer);
+
+      uv_cond_destroy(&port->conditions.drain);
+      uv_cond_destroy(&port->conditions.flush);
+
+      free(port);
+    }
+
+    free(segment);
+  }
+
+  uv_mutex_destroy(&channel->grow);
+
+  free(channel);
+}
+
 static js_value_t *
 bare_broadcast_channel_init(js_env_t *env, js_callback_info_t *info) {
   int err;
@@ -525,11 +559,11 @@ bare_broadcast_channel_init(js_env_t *env, js_callback_info_t *info) {
     assert(err == 0);
   }
 
-  js_value_t *handle;
-
-  bare_broadcast_channel_t *channel;
-  err = js_create_sharedarraybuffer(env, sizeof(bare_broadcast_channel_t), (void **) &channel, &handle);
-  assert(err == 0);
+  // The channel backs an externally managed shared array buffer rather than an
+  // engine-owned one so that its finalizer can reclaim the lazily allocated
+  // segments and ports. They live in process heap referenced from the channel,
+  // so they remain valid across every environment sharing the handle.
+  bare_broadcast_channel_t *channel = malloc(sizeof(bare_broadcast_channel_t));
 
   channel->port_capacity = bare_broadcast_channel__round_capacity(capacity);
 
@@ -541,6 +575,10 @@ bare_broadcast_channel_init(js_env_t *env, js_callback_info_t *info) {
   // The channel is not yet shared, so a plain clear of the table is sufficient
   // to initialise every segment pointer to NULL.
   memset(channel->segments, 0, sizeof(channel->segments));
+
+  js_value_t *handle;
+  err = js_create_external_sharedarraybuffer(env, (void *) channel, sizeof(bare_broadcast_channel_t), bare_broadcast_channel__finalize, NULL, &handle);
+  assert(err == 0);
 
   return handle;
 }
