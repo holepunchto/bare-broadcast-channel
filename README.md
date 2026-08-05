@@ -36,100 +36,141 @@ a.join()
 b.join()
 ```
 
+<!-- bare-refgen:api start -->
+
 ## API
 
-#### `const channel = new BroadcastChannel([options])`
+### BroadcastChannel
+
+#### `new BroadcastChannel(opts?: BroadcastChannelOptions)`
 
 Create a new broadcast channel. The channel is backed by a `SharedArrayBuffer` exposed as `channel.handle` that can be passed to other threads to share the channel across them.
 
-Options include:
+**Parameters**
 
-```js
-options = {
-  handle,
-  interfaces: []
-}
+| Parameter | Type                      | Default | Description                                                                                                                                                                                              |
+| --------- | ------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `opts?`   | `BroadcastChannelOptions` | —       | Channel options; `handle` backs the channel with an existing `SharedArrayBuffer`, `interfaces` registers serializable and transferable interfaces (default `[]`), and `portCapacity` defaults to `1024`. |
+
+#### `BroadcastChannel.from`
+
+```ts
+BroadcastChannel.from(handle: SharedArrayBuffer, opts?: BroadcastChannelOptions): BroadcastChannel
 ```
-
-If `handle` is provided, the channel is restored from that existing `SharedArrayBuffer` rather than allocating a fresh one. `interfaces` is a list of serializable constructors used by <https://github.com/holepunchto/bare-structured-clone> when encoding values.
-
-#### `BroadcastChannel.MAX_PORTS`
-
-Maximum number of ports that may connect to a single channel over its lifetime.
-
-#### `const channel = BroadcastChannel.from(handle[, options])`
 
 Restore a channel from its `SharedArrayBuffer` `handle`. `options` accepts the same fields as the constructor, except for `handle`.
 
-#### `channel.handle`
+**Parameters**
 
-The `SharedArrayBuffer` backing the channel. Pass this to other threads to share the channel.
+| Parameter | Type                      | Default | Description                                                                  |
+| --------- | ------------------------- | ------- | ---------------------------------------------------------------------------- |
+| `handle`  | `SharedArrayBuffer`       | —       | The `SharedArrayBuffer` backing the channel, as exposed by `channel.handle`. |
+| `opts?`   | `BroadcastChannelOptions` | —       | The same options as the constructor, except `handle`.                        |
 
-#### `channel.interfaces`
+**Returns** `BroadcastChannel` — A channel backed by the given `handle`.
 
-The serializable interfaces registered on the channel.
+#### `BroadcastChannel.MAX_PORTS: number`
 
-#### `const port = channel.connect()`
+Maximum number of ports that may connect to a single channel over its lifetime.
+
+#### `connect(): Port<T>`
 
 Connect a new port to the channel. Throws if `MAX_PORTS` has been reached. Port slots are not reused, so the cap applies to the total number of connections over the channel's lifetime, not the number of concurrently connected ports.
 
+**Returns** `Port<T>` — A new port connected to the channel.
+
+#### `handle: SharedArrayBuffer`
+
+The `SharedArrayBuffer` backing the channel. Pass this to other threads to share the channel.
+
+#### `interfaces: SerializableConstructor[]`
+
+The serializable and transferable interfaces registered on the channel.
+
 ### Port
 
-A `Port` is an `EventEmitter` and is both iterable (`for ... of`) and async iterable (`for await ... of`).
+#### `new Port(channel: BroadcastChannel<T>)`
 
-#### `port.peers`
+**Parameters**
 
-The current number of connected peer ports, excluding `port` itself.
+| Parameter | Type                  | Default | Description |
+| --------- | --------------------- | ------- | ----------- |
+| `channel` | `BroadcastChannel<T>` | —       | —           |
 
-#### `const flushed = await port.write(value)`
+#### `close(): Promise<void>`
 
-Broadcast `value` to every currently connected peer. Resolves to `true` once `value` has been pushed to every peer's queue, or `false` if `port` is closed. If any peer's queue is full, the write waits for it to drain before resolving.
+#### `createReadStream(opts?: ReadableOptions<Port<T>>): Readable`
 
-`value` is cloned for each peer using <https://github.com/holepunchto/bare-structured-clone>. Transferring ownership of a value is not supported; a broadcast delivers to many peers, so there is no single recipient to take ownership, and the same serialization is decoded independently by each peer.
+**Parameters**
 
-#### `const flushed = port.writeSync(value)`
+| Parameter | Type                       | Default | Description |
+| --------- | -------------------------- | ------- | ----------- |
+| `opts?`   | `ReadableOptions<Port<T>>` | —       | —           |
 
-Synchronous version of `port.write()`.
+#### `createStream(opts?: DuplexOptions<Port<T>>): Duplex`
 
-#### `const value = await port.read()`
+**Parameters**
 
-Read the next message broadcast to `port`. Resolves to `null` once `port` is closed via `port.close()`, or once every peer has left after at least one has been observed - so a read loop terminates naturally when the other side disconnects rather than waiting forever. Any messages still queued are delivered before `null`.
+| Parameter | Type                     | Default | Description |
+| --------- | ------------------------ | ------- | ----------- |
+| `opts?`   | `DuplexOptions<Port<T>>` | —       | —           |
 
-#### `const value = port.readSync()`
+#### `createWriteStream(opts?: WritableOptions<Port<T>>): Writable`
 
-Synchronous version of `port.read()`, with the same end-of-stream semantics: returns `null` once `port` is closed, or once every peer has left after at least one has been observed.
+**Parameters**
 
-#### `await port.close()`
+| Parameter | Type                       | Default | Description |
+| --------- | -------------------------- | ------- | ----------- |
+| `opts?`   | `WritableOptions<Port<T>>` | —       | —           |
 
-Close `port`, releasing it from the channel. After close, subsequent reads resolve to `null` and subsequent writes resolve to `false`.
+#### `peers: number`
 
-#### `port.ref()`
+#### `read(): Promise<T | null>`
 
-Reference `port`, keeping the event loop alive while it is open.
+#### `readSync(): T | null`
 
-#### `port.unref()`
+#### `ref(): void`
 
-Unreference `port`, letting the event loop exit if `port` is the only thing keeping it alive.
+#### `unref(): void`
 
-#### `const stream = port.createReadStream([options])`
+#### `write(value: T): Promise<boolean>`
 
-A `Readable` stream wrapping `port.read()`. `options` is passed through to <https://github.com/holepunchto/bare-stream>.
+**Parameters**
 
-#### `const stream = port.createWriteStream([options])`
+| Parameter | Type | Default | Description |
+| --------- | ---- | ------- | ----------- |
+| `value`   | `T`  | —       | —           |
 
-A `Writable` stream wrapping `port.write()` and `port.close()`. `options` is passed through to <https://github.com/holepunchto/bare-stream>.
+#### `writeSync(value: T): boolean`
 
-#### `const stream = port.createStream([options])`
+**Parameters**
 
-A `Duplex` stream wrapping read, write, and close. `options` is passed through to <https://github.com/holepunchto/bare-stream>.
+| Parameter | Type | Default | Description |
+| --------- | ---- | ------- | ----------- |
+| `value`   | `T`  | —       | —           |
 
-#### `event: 'peers'`
+### Types
 
-Emitted when the number of connected peer ports changes. The listener receives the new peer count.
+#### `BroadcastChannelOptions`
 
-#### `event: 'close'`
+```ts
+interface BroadcastChannelOptions {
+  handle?: SharedArrayBuffer
+  interfaces?: SerializableConstructor[]
+  portCapacity?: number
+}
+```
 
-Emitted once `port` has fully closed.
+#### `PortEvents`
+
+```ts
+interface PortEvents {
+  peers: [count: number]
+  close: []
+}
+```
+
+<!-- bare-refgen:api end -->
 
 ## License
 
