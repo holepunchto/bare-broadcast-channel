@@ -38,9 +38,7 @@ b.join()
 
 ## API
 
-See the [`bare-broadcast-channel` reference][reference].
-
-[reference]: https://docs.pears.com/reference/bare/modules/bare-broadcast-channel
+See the [`bare-broadcast-channel` reference](https://docs.pears.com/reference/bare/modules/bare-broadcast-channel).
 
 ## License
 
