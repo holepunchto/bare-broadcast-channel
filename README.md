@@ -10,16 +10,13 @@ npm i bare-broadcast-channel
 
 ```js
 const BroadcastChannel = require('bare-broadcast-channel')
-const { Thread } = Bare
+const Thread = require('bare-thread')
 
 const channel = new BroadcastChannel()
 
 const consumer = (label) =>
-  new Thread(__filename, { data: { handle: channel.handle, label } }, async ({ handle, label }) => {
-    const BroadcastChannel = require('bare-broadcast-channel')
-    const port = BroadcastChannel.from(handle).connect()
-    console.log(label, 'got', await port.read())
-    await port.close()
+  new Thread(require.resolve('./consumer'), {
+    data: { handle: channel.handle, label }
   })
 
 const a = consumer('a')
@@ -34,6 +31,22 @@ await port.close()
 
 a.join()
 b.join()
+```
+
+`consumer.js`
+
+```js
+const BroadcastChannel = require('bare-broadcast-channel')
+
+main()
+
+async function main() {
+  const { handle, label } = Bare.Thread.self.data
+
+  const port = BroadcastChannel.from(handle).connect()
+  console.log(label, 'got', await port.read())
+  await port.close()
+}
 ```
 
 ## API

@@ -1,8 +1,8 @@
 const test = require('brittle')
+const Thread = require('bare-thread')
 const { symbols } = require('bare-structured-clone')
 const { Barrier } = require('bare-atomics')
 const BroadcastChannel = require('.')
-const { Thread } = Bare
 
 test('basic broadcast to two consumers', async (t) => {
   t.plan(2)
@@ -10,29 +10,9 @@ test('basic broadcast to two consumers', async (t) => {
   const channel = new BroadcastChannel()
 
   const makeConsumer = () =>
-    new Thread(
-      __filename,
-      { data: { handle: channel.handle, count: 2 } },
-      async ({ handle, count }) => {
-        const BroadcastChannel = require('.')
-
-        const channel = BroadcastChannel.from(handle)
-        const port = channel.connect()
-
-        const received = []
-
-        for await (const data of port) {
-          received.push(data)
-          if (received.length === count) break
-        }
-
-        if (received[0] !== 'ping' || received[1] !== 'pong') {
-          throw new Error('Unexpected payload: ' + JSON.stringify(received))
-        }
-
-        await port.close()
-      }
-    )
+    new Thread(require.resolve('./test/fixtures/expect-ping-pong'), {
+      data: { handle: channel.handle, count: 2 }
+    })
 
   const a = makeConsumer()
   const b = makeConsumer()
@@ -80,25 +60,14 @@ test('multi producer single consumer', async (t) => {
   const producers = []
   for (let i = 0; i < NUM_PRODUCERS; i++) {
     producers.push(
-      new Thread(
-        __filename,
-        { data: { handle: channel.handle, barrierHandle: barrier.handle, id: i, n: PER_PRODUCER } },
-        async ({ handle, barrierHandle, id, n }) => {
-          const { Barrier } = require('bare-atomics')
-          const BroadcastChannel = require('.')
-
-          const channel = BroadcastChannel.from(handle)
-          const barrier = Barrier.from(barrierHandle)
-          const port = channel.connect()
-
-          barrier.wait()
-
-          for (let i = 0; i < n; i++) await port.write({ id, i })
-
-          await port.close()
-          for await (const _ of port);
+      new Thread(require.resolve('./test/fixtures/produce'), {
+        data: {
+          handle: channel.handle,
+          barrierHandle: barrier.handle,
+          id: i,
+          n: PER_PRODUCER
         }
-      )
+      })
     )
   }
 
@@ -135,57 +104,29 @@ test('multi producer multi consumer', async (t) => {
   const barrier = new Barrier(4)
 
   const consumer = () =>
-    new Thread(
-      __filename,
-      { data: { handle: channel.handle, barrierHandle: barrier.handle, expected: EXPECTED } },
-      async ({ handle, barrierHandle, expected }) => {
-        const { Barrier } = require('bare-atomics')
-        const BroadcastChannel = require('.')
-
-        const channel = BroadcastChannel.from(handle)
-        const barrier = Barrier.from(barrierHandle)
-        const port = channel.connect()
-
-        barrier.wait()
-
-        let count = 0
-        for await (const _ of port) {
-          count++
-          if (count === expected) break
-        }
-
-        if (count !== expected) throw new Error('Bad count ' + count)
-
-        await port.close()
+    new Thread(require.resolve('./test/fixtures/consume'), {
+      data: {
+        handle: channel.handle,
+        barrierHandle: barrier.handle,
+        expected: EXPECTED
       }
-    )
+    })
 
   const c1 = consumer()
   const c2 = consumer()
 
-  const producer = () =>
-    new Thread(
-      __filename,
-      { data: { handle: channel.handle, barrierHandle: barrier.handle, n: NUM } },
-      async ({ handle, barrierHandle, n }) => {
-        const { Barrier } = require('bare-atomics')
-        const BroadcastChannel = require('.')
-
-        const channel = BroadcastChannel.from(handle)
-        const barrier = Barrier.from(barrierHandle)
-        const port = channel.connect()
-
-        barrier.wait()
-
-        for (let i = 0; i < n; i++) await port.write(i)
-
-        await port.close()
-        for await (const _ of port);
+  const producer = (id) =>
+    new Thread(require.resolve('./test/fixtures/produce'), {
+      data: {
+        handle: channel.handle,
+        barrierHandle: barrier.handle,
+        id,
+        n: NUM
       }
-    )
+    })
 
-  const p1 = producer()
-  const p2 = producer()
+  const p1 = producer(0)
+  const p2 = producer(1)
 
   p1.join()
   p2.join()
@@ -204,18 +145,8 @@ test('read async two consumers', async (t) => {
   const channel = new BroadcastChannel()
 
   const make = () =>
-    new Thread(__filename, { data: channel.handle }, async (handle) => {
-      const BroadcastChannel = require('.')
-
-      const channel = BroadcastChannel.from(handle)
-      const port = channel.connect()
-
-      const a = await port.read()
-      const b = await port.read()
-
-      if (a !== 'ping' || b !== 'pong') throw new Error('bad ' + a + ' ' + b)
-
-      await port.close()
+    new Thread(require.resolve('./test/fixtures/expect-ping-pong-read'), {
+      data: channel.handle
     })
 
   const a = make()
@@ -244,18 +175,8 @@ test('read blocking', async (t) => {
   const channel = new BroadcastChannel()
 
   const make = () =>
-    new Thread(__filename, { data: channel.handle }, async (handle) => {
-      const BroadcastChannel = require('.')
-
-      const channel = BroadcastChannel.from(handle)
-      const port = channel.connect()
-
-      const a = port.readSync()
-      const b = port.readSync()
-
-      if (a !== 'ping' || b !== 'pong') throw new Error('bad ' + a + ' ' + b)
-
-      await port.close()
+    new Thread(require.resolve('./test/fixtures/expect-ping-pong-read-sync'), {
+      data: channel.handle
     })
 
   const a = make()
@@ -284,18 +205,8 @@ test('write blocking', async (t) => {
   const channel = new BroadcastChannel()
 
   const make = () =>
-    new Thread(__filename, { data: channel.handle }, async (handle) => {
-      const BroadcastChannel = require('.')
-
-      const channel = BroadcastChannel.from(handle)
-      const port = channel.connect()
-
-      const a = await port.read()
-      const b = await port.read()
-
-      if (a !== 'ping' || b !== 'pong') throw new Error('bad ' + a + ' ' + b)
-
-      await port.close()
+    new Thread(require.resolve('./test/fixtures/expect-ping-pong-read'), {
+      data: channel.handle
     })
 
   const a = make()
@@ -326,23 +237,8 @@ test('big echo broadcast', async (t) => {
   const N = 1e4
 
   const consumer = () =>
-    new Thread(__filename, { data: { handle: channel.handle, n: N } }, async ({ handle, n }) => {
-      const BroadcastChannel = require('.')
-
-      const channel = BroadcastChannel.from(handle)
-      const port = channel.connect()
-
-      const read = []
-      for await (const v of port) {
-        read.push(v)
-        if (read.length === n) break
-      }
-
-      let ok = true
-      for (let i = 0; i < n; i++) if (read[i] !== i) ok = false
-      if (!ok) throw new Error('mismatch')
-
-      await port.close()
+    new Thread(require.resolve('./test/fixtures/expect-sequence'), {
+      data: { handle: channel.handle, n: N }
     })
 
   const a = consumer()
@@ -380,31 +276,8 @@ test('serializable interface', async (t) => {
 
   const channel = new BroadcastChannel({ interfaces: [Foo] })
 
-  const thread = new Thread(__filename, { data: channel.handle }, async (handle) => {
-    const BroadcastChannel = require('.')
-    const { symbols } = require('bare-structured-clone')
-
-    class Foo {
-      constructor(foo) {
-        this.foo = foo
-      }
-
-      [symbols.serialize]() {
-        return this.foo
-      }
-
-      static [symbols.deserialize](serialized) {
-        return new Foo(serialized)
-      }
-    }
-
-    const channel = BroadcastChannel.from(handle, { interfaces: [Foo] })
-    const port = channel.connect()
-
-    const v = await port.read()
-    if (!(v instanceof Foo) || v.foo !== 'foo') throw new Error('bad')
-
-    await port.close()
+  const thread = new Thread(require.resolve('./test/fixtures/serializable-interface'), {
+    data: channel.handle
   })
 
   const port = channel.connect()
@@ -426,15 +299,8 @@ test('peers event fires when peer connects and disconnects', async (t) => {
   const channel = new BroadcastChannel()
   const port = channel.connect()
 
-  const thread = new Thread(__filename, { data: channel.handle }, async (handle) => {
-    const BroadcastChannel = require('.')
-
-    const channel = BroadcastChannel.from(handle)
-    const port = channel.connect()
-
-    await new Promise((r) => setTimeout(r, 20))
-
-    await port.close()
+  const thread = new Thread(require.resolve('./test/fixtures/connect-briefly'), {
+    data: channel.handle
   })
 
   let sawPeer = false
@@ -461,24 +327,9 @@ test('read stream', async (t) => {
 
   const N = 1e3
 
-  const thread = new Thread(
-    __filename,
-    { data: { handle: channel.handle, n: N } },
-    async ({ handle, n }) => {
-      const BroadcastChannel = require('.')
-
-      const channel = BroadcastChannel.from(handle)
-      const port = channel.connect()
-
-      while (port.peers < 1) await new Promise((r) => setTimeout(r, 10))
-
-      for (let i = 0; i < n; i++) {
-        await port.write(i)
-      }
-
-      await port.close()
-    }
-  )
+  const thread = new Thread(require.resolve('./test/fixtures/write-many'), {
+    data: { handle: channel.handle, n: N }
+  })
 
   const port = channel.connect()
   const stream = port.createReadStream()
@@ -508,26 +359,9 @@ test('write stream', async (t) => {
 
   const N = 1e3
 
-  const thread = new Thread(
-    __filename,
-    { data: { handle: channel.handle, n: N } },
-    async ({ handle, n }) => {
-      const BroadcastChannel = require('.')
-
-      const channel = BroadcastChannel.from(handle)
-      const port = channel.connect()
-
-      while (port.peers < 1) await new Promise((r) => setTimeout(r, 10))
-
-      const stream = port.createWriteStream()
-
-      for (let i = 0; i < n; i++) {
-        stream.write(Buffer.from(`${i}`))
-      }
-
-      stream.end()
-    }
-  )
+  const thread = new Thread(require.resolve('./test/fixtures/write-stream'), {
+    data: { handle: channel.handle, n: N }
+  })
 
   const port = channel.connect()
   const received = []
@@ -550,13 +384,8 @@ test('write stream', async (t) => {
 test('both sides close', async (t) => {
   const channel = new BroadcastChannel()
 
-  const thread = new Thread(__filename, { data: channel.handle }, async (handle) => {
-    const BroadcastChannel = require('.')
-
-    const channel = BroadcastChannel.from(handle)
-    const port = channel.connect()
-
-    await port.close()
+  const thread = new Thread(require.resolve('./test/fixtures/close'), {
+    data: channel.handle
   })
 
   const port = channel.connect()
@@ -575,48 +404,15 @@ test('three way broadcast', async (t) => {
   const EXPECTED = PER_NODE * (NODES - 1)
 
   const make = (label) =>
-    new Thread(
-      __filename,
-      {
-        data: {
-          handle: channel.handle,
-          label,
-          per: PER_NODE,
-          expected: EXPECTED,
-          others: NODES - 1
-        }
-      },
-      async ({ handle, label, per, expected, others }) => {
-        const BroadcastChannel = require('.')
-
-        const channel = BroadcastChannel.from(handle)
-        const port = channel.connect()
-
-        // Wait until we've at any point observed all other nodes connected
-        let maxSeen = 0
-        while (maxSeen < others) {
-          maxSeen = Math.max(maxSeen, port.peers)
-          if (maxSeen >= others) break
-          await new Promise((r) => setTimeout(r, 5))
-        }
-
-        const reader = (async () => {
-          let count = 0
-          for await (const _ of port) {
-            count++
-            if (count === expected) break
-          }
-          if (count !== expected) throw new Error(label + ' got ' + count)
-        })()
-
-        for (let i = 0; i < per; i++) {
-          await port.write({ from: label, i })
-        }
-
-        await reader
-        await port.close()
+    new Thread(require.resolve('./test/fixtures/three-way'), {
+      data: {
+        handle: channel.handle,
+        label,
+        per: PER_NODE,
+        expected: EXPECTED,
+        others: NODES - 1
       }
-    )
+    })
 
   const a = make('a')
   const b = make('b')
@@ -636,17 +432,8 @@ test('readSync terminates when all peers leave', async (t) => {
 
   const channel = new BroadcastChannel()
 
-  const thread = new Thread(__filename, { data: channel.handle }, async (handle) => {
-    const BroadcastChannel = require('.')
-
-    const channel = BroadcastChannel.from(handle)
-    const p = channel.connect()
-
-    while (p.peers < 1) await new Promise((r) => setTimeout(r, 10))
-
-    await p.write('hello')
-    await p.write('world')
-    await p.close()
+  const thread = new Thread(require.resolve('./test/fixtures/write-hello-world'), {
+    data: channel.handle
   })
 
   const port = channel.connect()
@@ -667,17 +454,8 @@ test('read terminates when all peers leave', async (t) => {
 
   const channel = new BroadcastChannel()
 
-  const thread = new Thread(__filename, { data: channel.handle }, async (handle) => {
-    const BroadcastChannel = require('.')
-
-    const channel = BroadcastChannel.from(handle)
-    const p = channel.connect()
-
-    while (p.peers < 1) await new Promise((r) => setTimeout(r, 10))
-
-    await p.write('hello')
-    await p.write('world')
-    await p.close()
+  const thread = new Thread(require.resolve('./test/fixtures/write-hello-world'), {
+    data: channel.handle
   })
 
   const port = channel.connect()
@@ -767,28 +545,9 @@ test('custom port capacity delivers all messages', async (t) => {
 
   const N = 1e3
 
-  const thread = new Thread(
-    __filename,
-    { data: { handle: channel.handle, n: N } },
-    async ({ handle, n }) => {
-      const BroadcastChannel = require('.')
-
-      const channel = BroadcastChannel.from(handle)
-      const port = channel.connect()
-
-      const read = []
-      for await (const v of port) {
-        read.push(v)
-        if (read.length === n) break
-      }
-
-      let ok = read.length === n
-      for (let i = 0; i < n; i++) if (read[i] !== i) ok = false
-      if (!ok) throw new Error('mismatch')
-
-      await port.close()
-    }
-  )
+  const thread = new Thread(require.resolve('./test/fixtures/expect-sequence'), {
+    data: { handle: channel.handle, n: N }
+  })
 
   const port = channel.connect()
 
@@ -811,24 +570,9 @@ test('concurrent connect and close churn across threads', async (t) => {
   const ROUNDS = 50
 
   const churn = () =>
-    new Thread(
-      __filename,
-      { data: { handle: channel.handle, rounds: ROUNDS } },
-      async ({ handle, rounds }) => {
-        const BroadcastChannel = require('.')
-
-        const channel = BroadcastChannel.from(handle)
-
-        for (let i = 0; i < rounds; i++) {
-          const port = channel.connect()
-
-          // Exercise the cross-thread producer path against peers that may be
-          // concurrently closing and having their slots reused.
-          await port.write(i)
-          await port.close()
-        }
-      }
-    )
+    new Thread(require.resolve('./test/fixtures/churn'), {
+      data: { handle: channel.handle, rounds: ROUNDS }
+    })
 
   const a = churn()
   const b = churn()
